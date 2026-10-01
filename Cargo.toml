@@ -1,0 +1,25 @@
+[package]
+name = "mneme"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arrow-array = "58"
+arrow-cast = "58"
+arrow-schema = "58"
+chrono = { version = "0.4.45", features = ["serde"] }
+fastembed = { version = "7.1.0", features = ["hf-hub"] }
+futures = "0.3.34"
+lancedb = { version = "0.38", features = ["remote"] }
+rmcp = { version = "3.5.0", features = ["server", "macros", "schemars", "transport-io"] }
+schemars = "1.2.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["io-std", "macros", "rt-multi-thread", "sync"] }
+toml = "1.1.6"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+uuid = { version = "1.26.1", features = ["v4"] }
+
+[dev-dependencies]
+serde_json = "1.0.151"
