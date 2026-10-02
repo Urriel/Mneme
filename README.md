@@ -51,7 +51,11 @@ Replace both paths with paths on your machine.
 
 `ingest` stores a document from `path` or from `text`. The result is `{"doc_id":"<ulid>"}`. The same bytes return the same id. A changed file writes a new row and sets `supersedes` to the previous id.
 
-`search` takes `query` and an optional `k` from 1 to 40. The result is `{"hits":[{"doc_id","title","path","score","excerpt"}]}`. The excerpt is at most 400 characters. Read `mneme://doc/{id}` for the full text. Optional `as_of` is a Lance table version. Optional `include_superseded` keeps replaced documents in the hits.
+`search_doc` takes `query` and an optional `k` from 1 to 40. The result is `{"hits":[{"doc_id","title","path","score","excerpt"}]}`. The excerpt is at most 400 characters. Call `get` or read `mneme://doc/{id}` for the full text. Optional `as_of` is a Lance table version. Optional `include_superseded` keeps replaced documents in the hits.
+
+`search_note` takes `query` and an optional `k` from 1 to 40. The result is `{"hits":[{"id","source_doc_id","score","excerpt"}]}`. It searches notes. A replaced note stays out of the hits. Call `get` or read `mneme://doc/{id}` for the full note.
+
+`get` takes `id`. The result is the full row for that document or note. The fields are `id`, `kind`, `text`, `supersedes`, `links`, `title`, `path`, `doc_id`, and `source_doc_id`. The same row is at `mneme://doc/{id}`.
 
 `list_recent` lists documents and notes ingested after `since`. With no `since`, the daemon uses the dream cursor.
 
@@ -63,8 +67,8 @@ Replace both paths with paths on your machine.
 
 ## Dream
 
-An agent that calls the daemon follows `.agents/skills/mneme/SKILL.md`. That skill chooses ingest, search, and a full-document read. The dream procedure is `.agents/skills/mneme-dream/SKILL.md`. Claude Code reads the same files through `.claude/skills/`. The daemon does not call a language model.
+An agent that calls the daemon follows `.agents/skills/mneme/SKILL.md`. That skill chooses ingest, `search_doc`, `search_note`, and `get`. The dream procedure is `.agents/skills/mneme-dream/SKILL.md`. Claude Code reads the same files through `.claude/skills/`. The daemon does not call a language model.
 
 ## Search in this version
 
-Search embeds the query, takes the nearest 40 chunks, takes the 40 best BM25 chunk matches, and fuses the two lists. It returns documents, not chunks. There is no separate ANN index.
+`search_doc` embeds the query, takes the nearest 40 chunks, takes the 40 best BM25 chunk matches, and fuses the two lists. It returns documents, not chunks. `search_note` fuses the nearest notes with the best BM25 note matches. There is no separate ANN index.

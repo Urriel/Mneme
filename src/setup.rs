@@ -6,8 +6,8 @@ use crate::Error;
 const MNEME_SKILL: &str = include_str!("../.agents/skills/mneme/SKILL.md");
 const DREAM_SKILL: &str = include_str!("../.agents/skills/mneme-dream/SKILL.md");
 
-const PROJECT_POINTER: &str = "If the Mneme tools ingest, search, list_recent, add_note, link, and set_cursor are available, follow `.agents/skills/mneme/SKILL.md`. The dream pass is `.agents/skills/mneme-dream/SKILL.md`.";
-const GLOBAL_POINTER: &str = "If the Mneme tools ingest, search, list_recent, add_note, link, and set_cursor are available, follow `~/.agents/skills/mneme/SKILL.md`. The dream pass is `~/.agents/skills/mneme-dream/SKILL.md`.";
+const PROJECT_POINTER: &str = "If the Mneme tools ingest, search_doc, search_note, get, list_recent, add_note, link, and set_cursor are available, follow `.agents/skills/mneme/SKILL.md`. The dream pass is `.agents/skills/mneme-dream/SKILL.md`.";
+const GLOBAL_POINTER: &str = "If the Mneme tools ingest, search_doc, search_note, get, list_recent, add_note, link, and set_cursor are available, follow `~/.agents/skills/mneme/SKILL.md`. The dream pass is `~/.agents/skills/mneme-dream/SKILL.md`.";
 
 #[derive(Clone, Debug)]
 pub enum SetupScope {
