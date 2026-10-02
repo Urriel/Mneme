@@ -22,7 +22,7 @@ mod store;
 
 pub use config::{Config, DEFAULT_DATA_DIR, DEFAULT_DEVICE, DEFAULT_DIM, DEFAULT_MODEL};
 pub use search::Hit;
-pub use setup::{SetupScope, mcp_snippet, setup};
+pub use setup::{McpInstall, SetupScope, mcp_snippet, setup};
 
 static OPEN_DIRS: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 
