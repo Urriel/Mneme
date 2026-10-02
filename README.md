@@ -25,7 +25,7 @@ Pass `--model`, `--dim`, and `--device cpu` to both commands when you do not wan
 
 `mneme setup` installs the skills into the current project and adds one pointer to `AGENTS.md`. `CLAUDE.md` points at that file when it is missing. `mneme setup --global` installs the same skills under your home directory and adds the pointer to `~/.claude/CLAUDE.md`. A second run leaves an edited skill in place.
 
-The command also looks for harness config already on this machine. Cursor gets `.cursor/mcp.json` or `~/.cursor/mcp.json`. Claude Code gets `.mcp.json` or `~/.claude.json`. Claude Desktop gets `claude_desktop_config.json`. An existing `mneme` entry with different arguments is left as it is. When none of those directories exist, the command prints the server block instead.
+The command also looks for harness config already on this machine. Cursor gets `.cursor/mcp.json` or `~/.cursor/mcp.json`. Claude Code gets `.mcp.json` or `~/.claude.json`. Claude Desktop gets `claude_desktop_config.json`. Grok gets `[mcp_servers.mneme]` in `.grok/config.toml` or `~/.grok/config.toml`. An existing `mneme` entry with different arguments is left as it is. When none of those directories exist, the command prints the server block instead.
 
 ```bash
 mneme setup --data brains/personal

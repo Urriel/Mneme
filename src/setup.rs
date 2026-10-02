@@ -75,6 +75,10 @@ fn register_mcp(
         found = true;
         upsert_server(&path, &entry, lines)?;
     }
+    if let Some(path) = grok_config(scope, &mcp.home) {
+        found = true;
+        upsert_grok(&path, mcp, lines)?;
+    }
     if !found {
         lines.push("no harness config found".into());
     }
@@ -90,6 +94,51 @@ fn claude_code_present(home: &Path, project: Option<&Path>) -> bool {
         || home.join(".claude.json").is_file()
         || project
             .is_some_and(|root| root.join(".claude").is_dir() || root.join(".mcp.json").is_file())
+}
+
+fn grok_config(scope: &SetupScope, home: &Path) -> Option<PathBuf> {
+    let path = match scope {
+        SetupScope::Project { root } => root.join(".grok/config.toml"),
+        SetupScope::Global { .. } => home.join(".grok/config.toml"),
+    };
+    let dir = path.parent()?;
+    if dir.is_dir() { Some(path) } else { None }
+}
+
+fn upsert_grok(path: &Path, mcp: &McpInstall, lines: &mut Vec<String>) -> Result<(), Error> {
+    let block = format!(
+        "[mcp_servers.mneme]\ncommand = \"{}\"\nargs = [\"run\", \"--data\", \"{}\"]\nenabled = true\nstartup_timeout_sec = 180\n",
+        mcp.command.display(),
+        mcp.data_dir.display()
+    );
+    if path.is_file() {
+        let current = fs::read_to_string(path)?;
+        if let Some(section) = current.split("[mcp_servers.mneme]").nth(1) {
+            let body = section.split("\n[").next().unwrap_or(section);
+            let same = body.contains(&mcp.command.display().to_string())
+                && body.contains(&mcp.data_dir.display().to_string());
+            if same {
+                lines.push(format!("kept mneme in {}", path.display()));
+            } else {
+                lines.push(format!(
+                    "left mneme in {} because it differs",
+                    path.display()
+                ));
+            }
+            return Ok(());
+        }
+        let mut next = current;
+        if !next.ends_with('\n') {
+            next.push('\n');
+        }
+        next.push('\n');
+        next.push_str(&block);
+        fs::write(path, next)?;
+    } else {
+        fs::write(path, block)?;
+    }
+    lines.push(format!("added mneme to {}", path.display()));
+    Ok(())
 }
 
 fn desktop_config(home: &Path) -> Option<PathBuf> {
@@ -474,5 +523,40 @@ mod tests {
         .unwrap();
         assert!(root.0.join(".cursor/mcp.json").is_file(), "{project:?}");
         assert!(root.0.join(".mcp.json").is_file(), "{project:?}");
+    }
+
+    #[test]
+    fn global_setup_appends_mneme_to_grok_config() {
+        let home = TempDir::new();
+        fs::create_dir_all(home.0.join(".grok")).unwrap();
+        fs::write(
+            home.0.join(".grok/config.toml"),
+            "[mcp_servers.blender]\ncommand = \"uvx\"\n",
+        )
+        .unwrap();
+        let mcp = bare_mcp(&home.0);
+        setup(
+            SetupScope::Global {
+                home: home.0.clone(),
+            },
+            &mcp,
+        )
+        .unwrap();
+        let text = fs::read_to_string(home.0.join(".grok/config.toml")).unwrap();
+        assert!(text.contains("[mcp_servers.blender]"), "blender stays");
+        assert!(
+            text.contains("[mcp_servers.mneme]"),
+            "grok config gains mneme: {text}"
+        );
+        assert!(text.contains("brains/personal"));
+        setup(
+            SetupScope::Global {
+                home: home.0.clone(),
+            },
+            &mcp,
+        )
+        .unwrap();
+        let again = fs::read_to_string(home.0.join(".grok/config.toml")).unwrap();
+        assert_eq!(again.matches("[mcp_servers.mneme]").count(), 1);
     }
 }
