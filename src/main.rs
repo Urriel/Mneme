@@ -51,6 +51,7 @@ fn main() {
                     eprintln!("{message}");
                     Err(mneme::Error::Store("reembed is not implemented".into()))
                 }
+                Command::Setup { .. } => Ok(()),
             }
         });
     if let Err(err) = result {
@@ -103,7 +104,7 @@ fn parse_args() -> Result<Cli, String> {
     })
 }
 
-fn parse_setup(args: &mut std::env::Args) -> Result<Cli, String> {
+fn parse_setup(args: &mut impl Iterator<Item = String>) -> Result<Cli, String> {
     let mut global = false;
     let mut data_dir = PathBuf::from(DEFAULT_DATA_DIR);
     while let Some(arg) = args.next() {
@@ -137,13 +138,27 @@ fn run_setup(global: bool, data_dir: &std::path::Path) -> Result<(), mneme::Erro
             root: std::env::current_dir()?,
         }
     };
-    for line in mneme::setup(scope)? {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let command = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("mneme"));
+    let lines = mneme::setup(
+        scope,
+        &mneme::McpInstall {
+            command: command.clone(),
+            data_dir: data_dir.to_path_buf(),
+            home,
+        },
+    )?;
+    let missing = lines.iter().any(|line| line == "no harness config found");
+    for line in lines {
         println!("{line}");
     }
-    let command = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("mneme"));
-    println!();
-    println!("Add this MCP server in the client. This command does not edit that config.");
-    println!("{}", mneme::mcp_snippet(&command, data_dir));
+    if missing {
+        println!();
+        println!("Add this MCP server in the client.");
+        println!("{}", mneme::mcp_snippet(&command, data_dir));
+    }
     Ok(())
 }
 
