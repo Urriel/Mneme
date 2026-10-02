@@ -1,0 +1,1 @@
+../../../.agents/skills/mneme/SKILL.md
