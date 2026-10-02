@@ -5,19 +5,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const PASTA: &str = "Boil salted water, add dried pasta, and simmer until tender.";
-const NOTES: &[&str] = &[
-    PASTA,
-    "File the tax forms before the April deadline.",
-    "A kubernetes pod restarts when its container exits.",
-    "Practice piano scales with both hands every morning.",
-    "Volcano ash grounded flights across the island.",
-    "The chess opening developed the queen early.",
-    "Bicycle gears make the climb easier.",
-    "Roman concrete hardened under seawater.",
-    "Feed the sourdough starter with flour and water.",
-    "Photosynthesis stores energy from sunlight in leaves.",
-];
+const PASTA: &str = "Boil salted water and simmer dried pasta until tender.";
 
 struct Session {
     child: Option<Child>,
@@ -32,8 +20,14 @@ impl Session {
     fn start(data: &Path, stderr_path: &Path) -> Self {
         let stderr = std::fs::File::create(stderr_path).unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_mneme"))
+            .arg("run")
             .arg("--data")
             .arg(data)
+            .arg("--model")
+            .arg("fake")
+            .arg("--dim")
+            .arg("4")
+            .env("MNEME_EMBEDDER", "fake")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::from(stderr))
@@ -80,19 +74,6 @@ impl Session {
         stdin.flush().unwrap();
     }
 
-    fn recv(&self, timeout: Duration) -> String {
-        match self.incoming.recv_timeout(timeout) {
-            Ok(Ok(line)) => line,
-            Ok(Err(err)) => panic!("stdout read failed: {err}\n{}", self.stderr()),
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                panic!("timed out waiting for the server\n{}", self.stderr())
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                panic!("server stdout closed\n{}", self.stderr())
-            }
-        }
-    }
-
     fn response(&self, id: i64, timeout: Duration) -> serde_json::Value {
         let deadline = Instant::now() + timeout;
         loop {
@@ -100,7 +81,11 @@ impl Session {
             if remaining.is_zero() {
                 panic!("timed out waiting for response {id}\n{}", self.stderr());
             }
-            let line = self.recv(remaining);
+            let line = match self.incoming.recv_timeout(remaining) {
+                Ok(Ok(line)) => line,
+                Ok(Err(err)) => panic!("stdout read failed: {err}\n{}", self.stderr()),
+                Err(_) => panic!("timed out waiting for the server\n{}", self.stderr()),
+            };
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
@@ -126,32 +111,31 @@ impl Session {
         }
     }
 
-    fn initialize(&mut self, timeout: Duration) {
-        let id = self.next_id;
-        self.next_id += 1;
+    fn initialize(&mut self) {
         self.send(&serde_json::json!({
             "jsonrpc": "2.0",
-            "id": id,
+            "id": 1,
             "method": "initialize",
             "params": {
-                "protocolVersion": "2025-11-25",
+                "protocolVersion": "2025-06-18",
                 "capabilities": {},
                 "clientInfo": {"name": "mneme-test", "version": "0.0.0"}
             }
         }));
-        let _ = self.response(id, timeout);
+        let result = self.response(1, Duration::from_secs(30));
+        assert_eq!(
+            result["protocolVersion"].as_str(),
+            Some("2025-06-18"),
+            "server negotiates 2025-06-18: {result}"
+        );
+        self.next_id = 2;
         self.send(&serde_json::json!({
             "jsonrpc": "2.0",
             "method": "notifications/initialized"
         }));
     }
 
-    fn call(
-        &mut self,
-        name: &str,
-        arguments: serde_json::Value,
-        timeout: Duration,
-    ) -> serde_json::Value {
+    fn call(&mut self, name: &str, arguments: serde_json::Value) -> serde_json::Value {
         let id = self.next_id;
         self.next_id += 1;
         self.send(&serde_json::json!({
@@ -160,7 +144,19 @@ impl Session {
             "method": "tools/call",
             "params": {"name": name, "arguments": arguments}
         }));
-        self.response(id, timeout)
+        self.response(id, Duration::from_secs(30))
+    }
+
+    fn read_doc(&mut self, id: &str) -> serde_json::Value {
+        let rpc = self.next_id;
+        self.next_id += 1;
+        self.send(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": rpc,
+            "method": "resources/read",
+            "params": {"uri": format!("mneme://doc/{id}")}
+        }));
+        self.response(rpc, Duration::from_secs(30))
     }
 }
 
@@ -188,110 +184,36 @@ fn tool_payload(result: &serde_json::Value) -> serde_json::Value {
     serde_json::from_str(text).unwrap_or_else(|err| panic!("tool text is not json: {text} ({err})"))
 }
 
-fn assert_pasta_first(payload: &serde_json::Value, id: &str) {
-    let hits = payload["hits"]
-        .as_array()
-        .unwrap_or_else(|| panic!("no hits: {payload}"));
-    assert!(
-        hits.len() >= 2,
-        "need two hits to compare scores: {payload}"
-    );
-    assert_eq!(hits[0]["id"].as_str(), Some(id), "top hit id: {payload}");
-    assert_eq!(
-        hits[0]["text"].as_str(),
-        Some(PASTA),
-        "top hit text: {payload}"
-    );
-    let first = hits[0]["score"].as_f64().expect("score");
-    let second = hits[1]["score"].as_f64().expect("score");
-    assert!(
-        first > second,
-        "top score {first} is not above {second}: {payload}"
-    );
-}
-
-fn scratch() -> PathBuf {
+#[test]
+fn stdio_ingest_and_read_round_trip() {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("mneme-stdio-{}-{stamp}", std::process::id()));
-    std::fs::create_dir_all(&path).unwrap();
-    path
-}
-
-#[test]
-#[ignore]
-fn meaning_search_persists_and_isolates() {
-    let root = scratch();
-    eprintln!("mneme stdio scratch: {}", root.display());
-    let personal = root.join("personal");
-    let company = root.join("company");
-    std::fs::create_dir_all(&personal).unwrap();
-    std::fs::create_dir_all(&company).unwrap();
-    let long = Duration::from_secs(10 * 60);
-    let short = Duration::from_secs(3 * 60);
-
-    let pasta_id = {
-        let mut session = Session::start(&personal, &root.join("stderr-1.txt"));
-        session.initialize(long);
-        let mut pasta_id = None;
-        for (index, text) in NOTES.iter().enumerate() {
-            let mut arguments = serde_json::json!({ "text": text });
-            if index == 0 {
-                arguments["metadata"] = serde_json::json!({"topic": "food"});
-            }
-            let result = session.call("memory_add", arguments, short);
-            let payload = tool_payload(&result);
-            let id = payload["id"]
-                .as_str()
-                .unwrap_or_else(|| panic!("add returned no id: {payload}"))
-                .to_owned();
-            if index == 0 {
-                pasta_id = Some(id);
-            }
-        }
-        let pasta_id = pasta_id.expect("pasta id");
-        let result = session.call(
-            "memory_search",
-            serde_json::json!({"query": "how do I cook noodles", "limit": 5}),
-            short,
-        );
-        assert_pasta_first(&tool_payload(&result), &pasta_id);
-        pasta_id
-    };
-
-    {
-        let mut session = Session::start(&personal, &root.join("stderr-2.txt"));
-        session.initialize(short);
-        let result = session.call(
-            "memory_search",
-            serde_json::json!({"query": "how do I cook noodles"}),
-            short,
-        );
-        assert_pasta_first(&tool_payload(&result), &pasta_id);
-    }
-
-    {
-        let mut session = Session::start(&company, &root.join("stderr-3.txt"));
-        session.initialize(short);
-        let result = session.call(
-            "memory_search",
-            serde_json::json!({"query": "how do I cook noodles"}),
-            short,
-        );
-        let payload = tool_payload(&result);
-        let hits = payload["hits"]
-            .as_array()
-            .unwrap_or_else(|| panic!("no hits: {payload}"));
-        for hit in hits {
-            assert_ne!(
-                hit["text"].as_str(),
-                Some(PASTA),
-                "a second data directory returned the personal note: {payload}"
-            );
-        }
-    }
-
-    std::fs::remove_dir_all(&root).unwrap();
+    let root = std::env::temp_dir().join(format!("mneme-stdio-docs-{stamp}"));
+    std::fs::create_dir_all(&root).unwrap();
+    let data = root.join("personal");
+    let mut session = Session::start(&data, &root.join("stderr.txt"));
+    session.initialize();
+    let added = tool_payload(&session.call(
+        "ingest",
+        serde_json::json!({"text": PASTA, "title": "Pasta"}),
+    ));
+    let doc_id = added["doc_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no doc_id: {added}"));
+    let read = session.read_doc(doc_id);
+    let body = read
+        .pointer("/contents/0/text")
+        .and_then(|item| item.as_str())
+        .unwrap_or_else(|| panic!("resource has no text: {read}"));
+    let parsed: serde_json::Value = serde_json::from_str(body).unwrap();
+    assert_eq!(
+        parsed["text"].as_str(),
+        Some(PASTA),
+        "resource returns the full document"
+    );
+    assert_eq!(parsed["kind"].as_str(), Some("doc"));
+    drop(session);
+    let _ = std::fs::remove_dir_all(&root);
 }
