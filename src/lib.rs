@@ -1,7 +1,12 @@
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions, TryLockError};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
+
+use tokio::io::AsyncWriteExt;
 
 use chrono::{DateTime, Utc};
 use rmcp::ServiceExt;
@@ -99,11 +104,13 @@ impl From<std::io::Error> for Error {
 
 struct OpenGuard {
     path: PathBuf,
+    socket: PathBuf,
     _file: File,
 }
 
 impl Drop for OpenGuard {
     fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.socket);
         unclaim(&self.path);
     }
 }
@@ -148,14 +155,7 @@ impl Mneme {
 
     pub async fn open(config: &Config) -> Result<Self, Error> {
         let prepared = prepare(config).await?;
-        let meta = required_meta(&prepared.store, config, &prepared.guard.path).await?;
-        let embedder: Box<dyn Embedder> =
-            if std::env::var("MNEME_EMBEDDER").ok().as_deref() == Some("fake") {
-                Box::new(HashEmbedder::new(config.dim))
-            } else {
-                Box::new(QwenEmbedder::load(&meta.model, config.dim)?)
-            };
-        finish(prepared, embedder)
+        load(prepared, config).await
     }
 
     pub(crate) async fn open_with(
@@ -454,7 +454,7 @@ struct Prepared {
     guard: OpenGuard,
 }
 
-async fn prepare(config: &Config) -> Result<Prepared, Error> {
+fn check_config(config: &Config) -> Result<(), Error> {
     if config.device != crate::DEFAULT_DEVICE {
         return Err(Error::Device(config.device.clone()));
     }
@@ -462,7 +462,16 @@ async fn prepare(config: &Config) -> Result<Prepared, Error> {
     {
         return Err(Error::NotesBrain);
     }
+    Ok(())
+}
+
+async fn prepare(config: &Config) -> Result<Prepared, Error> {
+    check_config(config)?;
     let guard = lock_dir(&config.data_dir)?;
+    finish_prepare(config, guard).await
+}
+
+async fn finish_prepare(config: &Config, guard: OpenGuard) -> Result<Prepared, Error> {
     let store = Store::open(&guard.path, config.dim).await?;
     if store.read_meta().await?.is_none() {
         let dim = i32::try_from(config.dim).map_err(|_| Error::Store("dim does not fit".into()))?;
@@ -475,6 +484,17 @@ async fn prepare(config: &Config) -> Result<Prepared, Error> {
             .await?;
     }
     Ok(Prepared { store, guard })
+}
+
+async fn load(prepared: Prepared, config: &Config) -> Result<Mneme, Error> {
+    let meta = required_meta(&prepared.store, config, &prepared.guard.path).await?;
+    let embedder: Box<dyn Embedder> =
+        if std::env::var("MNEME_EMBEDDER").ok().as_deref() == Some("fake") {
+            Box::new(HashEmbedder::new(config.dim))
+        } else {
+            Box::new(QwenEmbedder::load(&meta.model, config.dim)?)
+        };
+    finish(prepared, embedder)
 }
 
 async fn required_meta(store: &Store, config: &Config, data_dir: &Path) -> Result<Meta, Error> {
@@ -506,16 +526,109 @@ fn finish(prepared: Prepared, embedder: Box<dyn Embedder>) -> Result<Mneme, Erro
     })
 }
 
+const ATTACH_WAIT: Duration = Duration::from_secs(3);
+
+fn client_socket(data_dir: &Path) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(data_dir.as_os_str().as_bytes());
+    let hex: String = digest
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    PathBuf::from(format!("/tmp/mneme-{hex}.sock"))
+}
+
 pub async fn serve(config: &Config) -> Result<(), Error> {
-    let mneme = Mneme::open(config).await?;
+    check_config(config)?;
+    let guard = match lock_dir(&config.data_dir) {
+        Ok(guard) => guard,
+        Err(Error::WriterBusy) => {
+            if attach(&config.data_dir).await? {
+                return Ok(());
+            }
+            lock_dir(&config.data_dir)?
+        }
+        Err(err) => return Err(err),
+    };
+    let socket_path = guard.socket.clone();
+    let listener = bind_clients(&socket_path)?;
+    let prepared = finish_prepare(config, guard).await?;
+    let mneme = load(prepared, config).await?;
+    run_sessions(mneme, listener).await
+}
+
+async fn run_sessions(mneme: Mneme, listener: tokio::net::UnixListener) -> Result<(), Error> {
+    let shared = mneme.clone();
+    let accept = tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
+            let session = mcp::Mcp::new(shared.clone());
+            tokio::spawn(async move {
+                let Ok(running) = session.serve(stream).await else {
+                    return;
+                };
+                let _ = running.waiting().await;
+            });
+        }
+    });
     let running = mcp::Mcp::new(mneme)
         .serve(rmcp::transport::io::stdio())
         .await
         .map_err(|err| Error::Store(err.to_string()))?;
-    running
+    let result = running
         .waiting()
         .await
-        .map_err(|err| Error::Store(err.to_string()))?;
+        .map_err(|err| Error::Store(err.to_string()));
+    accept.abort();
+    result?;
+    Ok(())
+}
+
+fn bind_clients(path: &Path) -> Result<tokio::net::UnixListener, Error> {
+    let _ = std::fs::remove_file(path);
+    let listener = tokio::net::UnixListener::bind(path)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
+}
+
+async fn attach(data_dir: &Path) -> Result<bool, Error> {
+    let sock = client_socket(&data_dir.canonicalize()?);
+    let deadline = Instant::now() + ATTACH_WAIT;
+    loop {
+        match tokio::net::UnixStream::connect(&sock).await {
+            Ok(stream) => {
+                proxy(stream).await?;
+                return Ok(true);
+            }
+            Err(_) if Instant::now() >= deadline => return Ok(false),
+            Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+}
+
+async fn proxy(stream: tokio::net::UnixStream) -> Result<(), Error> {
+    let (mut reader, mut writer) = stream.into_split();
+    let inbound = async {
+        let mut stdout = tokio::io::stdout();
+        tokio::io::copy(&mut reader, &mut stdout).await
+    };
+    let outbound = async {
+        let mut stdin = tokio::io::stdin();
+        let copied = tokio::io::copy(&mut stdin, &mut writer).await;
+        let _ = writer.shutdown().await;
+        copied
+    };
+    tokio::select! {
+        result = inbound => {
+            result?;
+        }
+        result = outbound => {
+            result?;
+        }
+    }
     Ok(())
 }
 
@@ -537,7 +650,11 @@ fn lock_dir(dir: &Path) -> Result<OpenGuard, Error> {
         }
     };
     match file.try_lock() {
-        Ok(()) => Ok(OpenGuard { path, _file: file }),
+        Ok(()) => Ok(OpenGuard {
+            socket: client_socket(&path),
+            path,
+            _file: file,
+        }),
         Err(TryLockError::WouldBlock) => {
             unclaim(&path);
             Err(Error::WriterBusy)

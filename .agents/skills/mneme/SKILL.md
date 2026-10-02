@@ -39,4 +39,4 @@ Notes, links, and `set_cursor` belong to the dream pass. A chat answer is not a 
 4. Leave `add_note`, `link`, and `set_cursor` to the dream skill.
 5. Pass `include_superseded` only when the user wants the replaced document. Pass `as_of` only when the user names a Lance version. That search uses vectors only.
 
-One `mneme run --data <folder>` owns that folder. A second folder is a second brain. Point `--data` at a new folder. A folder that still has `brain.toml` is the older notes layout.
+One process owns the folder. A later `mneme run` for that folder attaches to the owner. A second folder is a second brain. Point `--data` at a new folder. A folder that still has `brain.toml` is the older notes layout.
