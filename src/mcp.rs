@@ -55,6 +55,23 @@ struct SearchOut {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct NoteSearchArgs {
+    query: String,
+    #[serde(default)]
+    k: Option<u32>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+struct NoteSearchOut {
+    hits: Vec<crate::NoteHit>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct GetArgs {
+    id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct RecentArgs {
     #[serde(default)]
     since: Option<String>,
@@ -123,10 +140,10 @@ impl Mcp {
     }
 
     #[tool(
-        name = "search",
+        name = "search_doc",
         description = "Search documents by meaning and words. Returns doc_id, title, path, score, and a short excerpt."
     )]
-    async fn search(
+    async fn search_doc(
         &self,
         Parameters(args): Parameters<SearchArgs>,
     ) -> Result<Json<SearchOut>, ErrorData> {
@@ -142,6 +159,35 @@ impl Mcp {
             .await
             .map_err(error_data)?;
         Ok(Json(SearchOut { hits }))
+    }
+
+    #[tool(
+        name = "search_note",
+        description = "Search notes by meaning and words. Returns id, source_doc_id, score, and a short excerpt. A replaced note stays out of the hits."
+    )]
+    async fn search_note(
+        &self,
+        Parameters(args): Parameters<NoteSearchArgs>,
+    ) -> Result<Json<NoteSearchOut>, ErrorData> {
+        let k = args.k.unwrap_or(5) as usize;
+        let hits = self
+            .mneme
+            .search_notes(&args.query, k)
+            .await
+            .map_err(error_data)?;
+        Ok(Json(NoteSearchOut { hits }))
+    }
+
+    #[tool(
+        name = "get",
+        description = "Read one document or one note by id. Returns the full row."
+    )]
+    async fn get(
+        &self,
+        Parameters(args): Parameters<GetArgs>,
+    ) -> Result<Json<crate::Document>, ErrorData> {
+        let doc = self.mneme.read(&args.id).await.map_err(error_data)?;
+        Ok(Json(doc))
     }
 
     #[tool(
@@ -219,7 +265,9 @@ impl ServerHandler for Mcp {
                 .build(),
         )
         .with_protocol_version(ProtocolVersion::V_2025_06_18)
-        .with_instructions("Search returns an excerpt. Read mneme://doc/{id} for the full text.")
+        .with_instructions(
+            "search_doc and search_note return an excerpt. Call get or read mneme://doc/{id} for the full text.",
+        )
     }
 
     async fn read_resource(
@@ -232,18 +280,8 @@ impl ServerHandler for Mcp {
             .strip_prefix("mneme://doc/")
             .ok_or_else(|| ErrorData::invalid_params("uri must be mneme://doc/{id}", None))?;
         let doc = self.mneme.read(id).await.map_err(error_data)?;
-        let body = serde_json::to_string(&ResourceBody {
-            id: doc.id,
-            kind: doc.kind,
-            text: doc.text,
-            supersedes: doc.supersedes,
-            links: doc.links,
-            title: doc.title,
-            path: doc.path,
-            doc_id: doc.doc_id,
-            source_doc_id: doc.source_doc_id,
-        })
-        .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
+        let body = serde_json::to_string(&doc)
+            .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
         Ok(ReadResourceResult::new(vec![
             ResourceContents::text(body, request.uri).with_mime_type("application/json"),
         ])
@@ -261,19 +299,6 @@ impl ServerHandler for Mcp {
             ],
         ))
     }
-}
-
-#[derive(Serialize)]
-struct ResourceBody {
-    id: String,
-    kind: String,
-    text: String,
-    supersedes: Option<String>,
-    links: serde_json::Value,
-    title: String,
-    path: String,
-    doc_id: Option<String>,
-    source_doc_id: Option<String>,
 }
 
 fn error_data(err: Error) -> ErrorData {

@@ -20,6 +20,14 @@ pub struct Hit {
     pub excerpt: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+pub struct NoteHit {
+    pub id: String,
+    pub source_doc_id: String,
+    pub score: f32,
+    pub excerpt: String,
+}
+
 pub(crate) async fn search(
     store: &mut Store,
     embedder: &mut dyn Embedder,
@@ -70,6 +78,50 @@ pub(crate) async fn search(
             .score
             .total_cmp(&left.score)
             .then_with(|| left.doc_id.cmp(&right.doc_id))
+    });
+    hits.truncate(k);
+    Ok(hits)
+}
+
+pub(crate) async fn search_notes(
+    store: &mut Store,
+    embedder: &mut dyn Embedder,
+    query: &str,
+    k: usize,
+) -> Result<Vec<NoteHit>, Error> {
+    if query.trim().is_empty() {
+        return Err(Error::EmptyText);
+    }
+    let vectors = tokio::task::block_in_place(|| embedder.embed(&[query.to_owned()]))?;
+    let vector = vectors
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::Embed("embedder returned no query vector".into()))?;
+    let by_vector = store.note_vector_search(&vector).await?;
+    let by_text = store.note_text_search(query).await?;
+    let fused = fuse(&by_vector, &by_text);
+    let notes = store.notes().await?;
+    let hidden = superseded_ids(&notes);
+    let mut hits = Vec::new();
+    for (hit, score) in fused {
+        if hidden.contains(&hit.id) {
+            continue;
+        }
+        let Some(note) = notes.iter().find(|row| row.id == hit.id) else {
+            continue;
+        };
+        hits.push(NoteHit {
+            id: hit.id,
+            source_doc_id: note.source_doc_id.clone().unwrap_or_default(),
+            score,
+            excerpt: excerpt_of(&hit.text),
+        });
+    }
+    hits.sort_by(|left, right| {
+        right
+            .score
+            .total_cmp(&left.score)
+            .then_with(|| left.id.cmp(&right.id))
     });
     hits.truncate(k);
     Ok(hits)

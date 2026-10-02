@@ -146,6 +146,11 @@ impl Store {
         rows_from(&batches, self.dim)
     }
 
+    pub(crate) async fn notes(&self) -> Result<Vec<Row>, Error> {
+        let batches = collect(&self.docs, Some("kind = 'note'"), 100_000).await?;
+        rows_from(&batches, self.dim)
+    }
+
     pub(crate) async fn recent(&self) -> Result<Vec<Row>, Error> {
         let batches = collect(&self.docs, Some("kind = 'doc' OR kind = 'note'"), 100_000).await?;
         rows_from(&batches, self.dim)
@@ -156,9 +161,28 @@ impl Store {
     }
 
     pub(crate) async fn vector_search(&mut self, vector: &[f32]) -> Result<Vec<ChunkHit>, Error> {
+        self.nearest("kind = 'chunk'", vector).await
+    }
+
+    pub(crate) async fn note_vector_search(
+        &mut self,
+        vector: &[f32],
+    ) -> Result<Vec<ChunkHit>, Error> {
+        self.nearest("kind = 'note'", vector).await
+    }
+
+    pub(crate) async fn text_search(&mut self, query: &str) -> Result<Vec<ChunkHit>, Error> {
+        self.words("kind = 'chunk'", query).await
+    }
+
+    pub(crate) async fn note_text_search(&mut self, query: &str) -> Result<Vec<ChunkHit>, Error> {
+        self.words("kind = 'note'", query).await
+    }
+
+    async fn nearest(&mut self, filter: &str, vector: &[f32]) -> Result<Vec<ChunkHit>, Error> {
         if self
             .docs
-            .count_rows(Some("kind = 'chunk'".into()))
+            .count_rows(Some(filter.to_owned()))
             .await
             .map_err(store_err)?
             == 0
@@ -168,7 +192,7 @@ impl Store {
         let stream = self
             .docs
             .query()
-            .only_if("kind = 'chunk'")
+            .only_if(filter)
             .nearest_to(vector.to_vec())
             .map_err(store_err)?
             .limit(40)
@@ -180,13 +204,13 @@ impl Store {
         chunk_hits(&batches)
     }
 
-    pub(crate) async fn text_search(&mut self, query: &str) -> Result<Vec<ChunkHit>, Error> {
+    async fn words(&mut self, filter: &str, query: &str) -> Result<Vec<ChunkHit>, Error> {
         if self.pinned {
             return Ok(Vec::new());
         }
         if self
             .docs
-            .count_rows(Some("kind = 'chunk'".into()))
+            .count_rows(Some(filter.to_owned()))
             .await
             .map_err(store_err)?
             == 0
@@ -197,7 +221,7 @@ impl Store {
         let stream = self
             .docs
             .query()
-            .only_if("kind = 'chunk'")
+            .only_if(filter)
             .full_text_search(FullTextSearchQuery::new(query.to_owned()))
             .limit(40)
             .select(Select::columns(&["id", "doc_id", "text"]))

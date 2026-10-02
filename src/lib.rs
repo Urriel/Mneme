@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::embed::{Embedder, HashEmbedder, QwenEmbedder};
 use crate::ingest::ingest_text;
-use crate::search::search;
+use crate::search::{search, search_notes};
 use crate::store::{Meta, Row, Store};
 
 mod config;
@@ -26,7 +26,7 @@ mod setup;
 mod store;
 
 pub use config::{Config, DEFAULT_DATA_DIR, DEFAULT_DEVICE, DEFAULT_DIM, DEFAULT_MODEL};
-pub use search::Hit;
+pub use search::{Hit, NoteHit};
 pub use setup::{McpInstall, SetupScope, mcp_snippet, setup};
 
 static OPEN_DIRS: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
@@ -267,6 +267,15 @@ impl Mneme {
         result
     }
 
+    pub async fn search_notes(&self, query: &str, k: usize) -> Result<Vec<NoteHit>, Error> {
+        if k == 0 || k > 40 {
+            return Err(Error::Store("k must be from 1 to 40".into()));
+        }
+        let mut state = self.shared.state.lock().await;
+        let State { store, embedder } = &mut *state;
+        search_notes(store, embedder.as_mut(), query, k).await
+    }
+
     pub async fn list_recent(&self, since: Option<&str>) -> Result<Vec<Recent>, Error> {
         let state = self.shared.state.lock().await;
         let cutoff = match since {
@@ -394,7 +403,7 @@ impl Mneme {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, schemars::JsonSchema)]
 pub struct Document {
     pub id: String,
     pub kind: String,
@@ -741,6 +750,15 @@ mod tests {
                 ("new fact about roman concrete", vec![0.0, 0.0, 0.0, 1.0]),
                 ("volcano", vec![0.0, 0.0, 1.0, 0.0]),
                 ("concrete", vec![0.0, 0.0, 0.0, 1.0]),
+                (
+                    "Salt the water before the pasta goes in.",
+                    vec![1.0, 0.0, 0.0, 0.0],
+                ),
+                (
+                    "File the return when the tax deadline arrives.",
+                    vec![0.0, 1.0, 0.0, 0.0],
+                ),
+                ("salt the pasta water", vec![1.0, 0.0, 0.0, 0.0]),
             ],
         ))
     }
@@ -804,6 +822,57 @@ mod tests {
         );
         let doc = brain.read(&hits[0].doc_id).await.unwrap();
         assert_eq!(doc.text, PASTA, "read returns the full text after search");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn search_note_returns_the_note() {
+        let dir = TempDir::new();
+        let brain = Mneme::open_with(&config(dir.path()), embedder())
+            .await
+            .unwrap();
+        let pasta = brain.ingest_text(PASTA, "Pasta", "").await.unwrap();
+        let tax = brain.ingest_text(TAX, "Tax", "").await.unwrap();
+        let salt = brain
+            .add_note(
+                "Salt the water before the pasta goes in.",
+                &pasta,
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+        brain
+            .add_note(
+                "File the return when the tax deadline arrives.",
+                &tax,
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+        let hits = brain.search_notes("salt the pasta water", 5).await.unwrap();
+        assert_eq!(
+            hits[0].id, salt,
+            "search_note returns the salt note: {hits:?}"
+        );
+        assert_eq!(hits[0].source_doc_id, pasta);
+        assert!(
+            hits[0].excerpt.contains("Salt"),
+            "excerpt comes from the note"
+        );
+        let old = brain
+            .add_note("old fact about volcano ash", &pasta, &[], None)
+            .await
+            .unwrap();
+        brain
+            .add_note("new fact about roman concrete", &pasta, &[], Some(&old))
+            .await
+            .unwrap();
+        let volcano = brain.search_notes("volcano", 5).await.unwrap();
+        assert!(
+            volcano.iter().all(|hit| hit.id != old),
+            "a replaced note stays out of search_note: {volcano:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
