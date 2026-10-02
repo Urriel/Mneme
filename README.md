@@ -52,7 +52,7 @@ Replace both paths with paths on your machine.
 
 ## Dream
 
-The dream procedure is an agent skill at `.agents/skills/mneme-dream/SKILL.md`. Claude Code reads the same file through `.claude/skills/mneme-dream/SKILL.md`. The daemon does not call a language model.
+An agent that calls the daemon follows `.agents/skills/mneme/SKILL.md`. That skill chooses ingest, search, and a full-document read. The dream procedure is `.agents/skills/mneme-dream/SKILL.md`. Claude Code reads the same files through `.claude/skills/`. The daemon does not call a language model.
 
 ## Search in this version
 
