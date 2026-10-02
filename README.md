@@ -1,23 +1,25 @@
 # Mneme
 
-Mneme is one local process that stores notes and searches them by meaning. You run the `mneme` binary. It speaks MCP on stdin and stdout. Embeddings run on this machine. The notes stay in the directory you pass to `--data`.
+Mneme is one local process that stores documents and searches them by meaning and by words. You run the `mneme` binary. It speaks MCP on stdin and stdout. Embeddings run on this machine. The files stay in the directory you pass to `--data`.
+
+The default directory is `./mneme-data`. A second `--data` path is a second brain.
 
 ## Create a brain
 
 Install `protoc` before the first compile. On macOS, run `brew install protobuf`.
 
 ```bash
-mkdir -p brains/personal
-cargo run --release -- --data brains/personal
+mneme init --data brains/personal
+mneme run --data brains/personal
 ```
 
-The first start downloads the embedding model into `.fastembed_cache` in the current directory. Set `FASTEMBED_CACHE_DIR` to store that cache somewhere else. The cache is not inside the `--data` directory.
+`init` creates the folder and locks the embedding model. `run` serves MCP. The first `run` downloads `Qwen/Qwen3-Embedding-0.6B` into `.fastembed_cache` in the current directory. Set `FASTEMBED_CACHE_DIR` to store that cache somewhere else. The cache is not inside the `--data` directory.
 
 The process logs to stderr. Stdout is the MCP protocol.
 
-Quit this process before Claude Desktop starts the same directory. One process owns a data directory.
+Quit this process before another client opens the same directory. One process owns a data directory.
 
-The release binary is `target/release/mneme`.
+Pass `--model`, `--dim`, and `--device cpu` to both commands when you do not want the default model. The default dimension is 1024. Opening a directory with a different model or dimension fails. `mneme reembed` prints the locked model and does not rewrite vectors.
 
 ## Connect Claude Desktop
 
@@ -26,7 +28,7 @@ The release binary is `target/release/mneme`.
   "mcpServers": {
     "mneme": {
       "command": "/absolute/path/to/mneme",
-      "args": ["--data", "/absolute/path/brains/personal"]
+      "args": ["run", "--data", "/absolute/path/brains/personal"]
     }
   }
 }
@@ -36,14 +38,22 @@ Replace both paths with paths on your machine.
 
 ## Tools
 
-`memory_add` stores one note. Pass `text` and an optional `metadata` object. The result is `{"id":"<uuid>"}`.
+`ingest` stores a document from `path` or from `text`. The result is `{"doc_id":"<ulid>"}`. The same bytes return the same id. A changed file writes a new row and sets `supersedes` to the previous id.
 
-`memory_search` takes `query` and an optional `limit`. The result is `{"hits":[{"id","text","score","metadata"}]}`. A higher `score` means a closer note. `limit` defaults to 5. `memory_search` rejects a limit outside 1 to 100.
+`search` takes `query` and an optional `k` from 1 to 40. The result is `{"hits":[{"doc_id","title","path","score","excerpt"}]}`. The excerpt is at most 400 characters. Read `mneme://doc/{id}` for the full text. Optional `as_of` is a Lance table version. Optional `include_superseded` keeps replaced documents in the hits.
 
-## A second brain
+`list_recent` lists documents and notes ingested after `since`. With no `since`, the daemon uses the dream cursor.
 
-A second `--data` path is a separate brain. Notes in `brains/company` stay out of `brains/personal`.
+`add_note` stores one note. It does not change the source document.
+
+`link` appends one note id to another note.
+
+`set_cursor` advances the dream cursor. The dream skill is the caller.
+
+## Dream
+
+The dream procedure is an agent skill at `.agents/skills/mneme-dream/SKILL.md`. Claude Code reads the same file through `.claude/skills/mneme-dream/SKILL.md`. The daemon does not call a language model.
 
 ## Search in this version
 
-Search compares the query with every stored vector. This version does not build an ANN index.
+Search embeds the query, takes the nearest 40 chunks, takes the 40 best BM25 chunk matches, and fuses the two lists. It returns documents, not chunks. There is no separate ANN index.
