@@ -6,6 +6,7 @@ enum Command {
     Init,
     Run,
     Reembed,
+    Setup { global: bool },
 }
 
 struct Cli {
@@ -21,6 +22,13 @@ fn main() {
             std::process::exit(2);
         }
     };
+    if let Command::Setup { global } = cli.command {
+        if let Err(err) = run_setup(global, &cli.config.data_dir) {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+        return;
+    }
     // SAFETY: this thread is the only one alive. The runtime starts after this.
     unsafe {
         std::env::set_var("HF_HUB_DISABLE_PROGRESS_BARS", "1");
@@ -57,6 +65,9 @@ fn parse_args() -> Result<Cli, String> {
         Some("init") => Command::Init,
         Some("run") => Command::Run,
         Some("reembed") => Command::Reembed,
+        Some("setup") => {
+            return parse_setup(&mut args);
+        }
         _ => return Err(usage()),
     };
     let mut data_dir = PathBuf::from(DEFAULT_DATA_DIR);
@@ -92,6 +103,50 @@ fn parse_args() -> Result<Cli, String> {
     })
 }
 
+fn parse_setup(args: &mut std::env::Args) -> Result<Cli, String> {
+    let mut global = false;
+    let mut data_dir = PathBuf::from(DEFAULT_DATA_DIR);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--global" => global = true,
+            "--data" => {
+                let value = args.next().ok_or_else(usage)?;
+                if value.is_empty() || value.starts_with('-') {
+                    return Err(usage());
+                }
+                data_dir = PathBuf::from(value);
+            }
+            _ => return Err(usage()),
+        }
+    }
+    Ok(Cli {
+        command: Command::Setup { global },
+        config: Config::new(data_dir),
+    })
+}
+
+fn run_setup(global: bool, data_dir: &std::path::Path) -> Result<(), mneme::Error> {
+    let scope = if global {
+        let home = std::env::var_os("HOME")
+            .ok_or_else(|| mneme::Error::Store("HOME is not set".into()))?;
+        mneme::SetupScope::Global {
+            home: PathBuf::from(home),
+        }
+    } else {
+        mneme::SetupScope::Project {
+            root: std::env::current_dir()?,
+        }
+    };
+    for line in mneme::setup(scope)? {
+        println!("{line}");
+    }
+    let command = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("mneme"));
+    println!();
+    println!("Add this MCP server in the client. This command does not edit that config.");
+    println!("{}", mneme::mcp_snippet(&command, data_dir));
+    Ok(())
+}
+
 fn usage() -> String {
-    "usage: mneme <init|run|reembed> [--data dir] [--model id] [--dim n] [--device cpu]".into()
+    "usage: mneme <init|run|reembed|setup> [--data dir] [--model id] [--dim n] [--device cpu] [--global]".into()
 }
