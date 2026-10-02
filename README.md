@@ -21,6 +21,15 @@ Quit this process before another client opens the same directory. One process ow
 
 Pass `--model`, `--dim`, and `--device cpu` to both commands when you do not want the default model. The default dimension is 1024. Opening a directory with a different model or dimension fails. `mneme reembed` prints the locked model and does not rewrite vectors.
 
+## Tell an agent about Mneme
+
+`mneme setup` installs the skills into the current project and adds one pointer to `AGENTS.md`. `CLAUDE.md` points at that file when it is missing. `mneme setup --global` installs the same skills under your home directory and adds the pointer to `~/.claude/CLAUDE.md`. A second run leaves an edited skill in place. The command prints the MCP server block and does not write it.
+
+```bash
+mneme setup --data brains/personal
+mneme setup --global --data brains/personal
+```
+
 ## Connect Claude Desktop
 
 ```json
