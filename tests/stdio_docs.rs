@@ -217,3 +217,40 @@ fn stdio_ingest_and_read_round_trip() {
     drop(session);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn second_run_uses_the_same_brain() {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("mneme-stdio-attach-{stamp}"));
+    std::fs::create_dir_all(&root).unwrap();
+    let data = root.join("personal");
+    let mut owner = Session::start(&data, &root.join("owner-stderr.txt"));
+    owner.initialize();
+    let added = tool_payload(&owner.call(
+        "ingest",
+        serde_json::json!({"text": PASTA, "title": "Pasta"}),
+    ));
+    let doc_id = added["doc_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no doc_id: {added}"))
+        .to_owned();
+    let mut other = Session::start(&data, &root.join("other-stderr.txt"));
+    other.initialize();
+    let again = tool_payload(&other.call(
+        "ingest",
+        serde_json::json!({"text": PASTA, "title": "Pasta"}),
+    ));
+    assert_eq!(
+        again["doc_id"].as_str(),
+        Some(doc_id.as_str()),
+        "attached client stores into the owner's brain\nowner: {}\nother: {}",
+        owner.stderr(),
+        other.stderr()
+    );
+    drop(other);
+    drop(owner);
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -17,7 +17,7 @@ mneme run --data brains/personal
 
 The process logs to stderr. Stdout is the MCP protocol.
 
-Quit this process before another client opens the same directory. One process owns a data directory.
+One process owns a data directory. A later `mneme run` for that same directory attaches to the owner and speaks MCP on its own stdin and stdout. When the owner exits, the attached clients close.
 
 Pass `--model`, `--dim`, and `--device cpu` to both commands when you do not want the default model. The default dimension is 1024. Opening a directory with a different model or dimension fails. `mneme reembed` prints the locked model and does not rewrite vectors.
 
